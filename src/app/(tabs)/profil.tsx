@@ -18,6 +18,7 @@ import {
   View,
 } from "react-native";
 
+import ProfilePhotoPicker from "../../components/ProfilePhotoPicker";
 import { useAuth } from "../../contexts/AuthContext";
 import { auth } from "../../services/firebase";
 import {
@@ -297,6 +298,7 @@ export default function ProfileScreen() {
             </Pressable>
           )}
         </View>
+        <ProfilePhotoPicker firstname={firstname} />
 
         {isEditing ? (
           <View style={styles.formCard}>
