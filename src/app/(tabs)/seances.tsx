@@ -10,6 +10,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   SectionList,
   StyleSheet,
@@ -114,6 +115,9 @@ export default function SessionsScreen() {
   const [workingSessionId, setWorkingSessionId] =
     useState<string | null>(null);
 
+  const [reminderSession, setReminderSession] =
+    useState<TrainingRequest | null>(null);
+
   const acceptedRequests = requests.filter(
     (request) =>
       request.status === "accepted" &&
@@ -190,7 +194,6 @@ export default function SessionsScreen() {
           {
             title: "Séances à venir",
             data: upcomingSessions,
-            isPast: false,
           },
         ]
       : []),
@@ -200,7 +203,6 @@ export default function SessionsScreen() {
           {
             title: "Séances passées",
             data: pastSessions,
-            isPast: true,
           },
         ]
       : []),
@@ -392,40 +394,24 @@ export default function SessionsScreen() {
       return;
     }
 
-    const existingReminder =
-      reminders[session.id];
+    setReminderSession(session);
+  };
 
-    Alert.alert(
-      existingReminder
-        ? "Modifier le rappel"
-        : "Créer un rappel",
-      "Quand souhaitez-vous recevoir la notification ?",
-      [
-        {
-          text: "24 heures avant",
-          onPress: () =>
-            saveReminder(session, 24 * 60),
-        },
-        {
-          text: "2 heures avant",
-          onPress: () =>
-            saveReminder(session, 2 * 60),
-        },
-        {
-          text: "1 heure avant",
-          onPress: () =>
-            saveReminder(session, 60),
-        },
-        {
-          text: "30 minutes avant",
-          onPress: () =>
-            saveReminder(session, 30),
-        },
-        {
-          text: "Fermer",
-          style: "cancel",
-        },
-      ]
+  const chooseReminderDelay = (
+    minutesBefore: number
+  ) => {
+    if (!reminderSession) {
+      return;
+    }
+
+    const selectedSession =
+      reminderSession;
+
+    setReminderSession(null);
+
+    saveReminder(
+      selectedSession,
+      minutesBefore
     );
   };
 
@@ -899,6 +885,195 @@ export default function SessionsScreen() {
         showsVerticalScrollIndicator={false}
         stickySectionHeadersEnabled={false}
       />
+
+      <Modal
+        visible={reminderSession !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() =>
+          setReminderSession(null)
+        }
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalIcon}>
+                <Ionicons
+                  name="notifications-outline"
+                  size={27}
+                  color={colors.secondaryDark}
+                />
+              </View>
+
+              <Pressable
+                style={styles.modalCloseButton}
+                onPress={() =>
+                  setReminderSession(null)
+                }
+              >
+                <Ionicons
+                  name="close"
+                  size={25}
+                  color={colors.textMuted}
+                />
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalTitle}>
+              {reminderSession &&
+              reminders[reminderSession.id]
+                ? "Modifier le rappel"
+                : "Créer un rappel"}
+            </Text>
+
+            <Text style={styles.modalSubtitle}>
+              Quand souhaitez-vous recevoir la
+              notification ?
+            </Text>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.delayButton,
+                pressed &&
+                  styles.pressedElement,
+              ]}
+              onPress={() =>
+                chooseReminderDelay(30)
+              }
+            >
+              <View style={styles.delayIcon}>
+                <Ionicons
+                  name="timer-outline"
+                  size={22}
+                  color={colors.primary}
+                />
+              </View>
+
+              <Text
+                style={styles.delayButtonText}
+              >
+                30 minutes avant
+              </Text>
+
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textMuted}
+              />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.delayButton,
+                pressed &&
+                  styles.pressedElement,
+              ]}
+              onPress={() =>
+                chooseReminderDelay(60)
+              }
+            >
+              <View style={styles.delayIcon}>
+                <Ionicons
+                  name="time-outline"
+                  size={22}
+                  color={colors.primary}
+                />
+              </View>
+
+              <Text
+                style={styles.delayButtonText}
+              >
+                1 heure avant
+              </Text>
+
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textMuted}
+              />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.delayButton,
+                pressed &&
+                  styles.pressedElement,
+              ]}
+              onPress={() =>
+                chooseReminderDelay(2 * 60)
+              }
+            >
+              <View style={styles.delayIcon}>
+                <Ionicons
+                  name="alarm-outline"
+                  size={22}
+                  color={colors.primary}
+                />
+              </View>
+
+              <Text
+                style={styles.delayButtonText}
+              >
+                2 heures avant
+              </Text>
+
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textMuted}
+              />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.delayButton,
+                pressed &&
+                  styles.pressedElement,
+              ]}
+              onPress={() =>
+                chooseReminderDelay(24 * 60)
+              }
+            >
+              <View style={styles.delayIcon}>
+                <Ionicons
+                  name="calendar-outline"
+                  size={22}
+                  color={colors.primary}
+                />
+              </View>
+
+              <Text
+                style={styles.delayButtonText}
+              >
+                24 heures avant
+              </Text>
+
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textMuted}
+              />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.modalCancelButton,
+                pressed &&
+                  styles.pressedElement,
+              ]}
+              onPress={() =>
+                setReminderSession(null)
+              }
+            >
+              <Text
+                style={styles.modalCancelText}
+              >
+                Annuler
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1198,6 +1373,104 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "bold",
     marginRight: spacing.xs,
+  },
+
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    padding: spacing.lg,
+  },
+
+  modalContainer: {
+    width: "100%",
+    maxWidth: 450,
+    alignSelf: "center",
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+
+  modalIcon: {
+    width: 52,
+    height: 52,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.secondaryLight,
+    borderRadius: 26,
+  },
+
+  modalCloseButton: {
+    width: 42,
+    height: 42,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderRadius: 21,
+  },
+
+  modalTitle: {
+    color: colors.primary,
+    fontSize: 23,
+    fontWeight: "bold",
+    marginTop: spacing.md,
+  },
+
+  modalSubtitle: {
+    color: colors.textMuted,
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: spacing.xs,
+    marginBottom: spacing.lg,
+  },
+
+  delayButton: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+  },
+
+  delayIcon: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    marginRight: spacing.md,
+  },
+
+  delayButtonText: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
+  modalCancelButton: {
+    minHeight: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: colors.divider,
+    borderRadius: radius.md,
+    marginTop: spacing.sm,
+  },
+
+  modalCancelText: {
+    color: colors.textMuted,
+    fontSize: 15,
+    fontWeight: "bold",
   },
 
   loadingText: {

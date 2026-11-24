@@ -1,9 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
-
-const NOTIFICATION_CHANNEL_ID =
-  "session-reminders";
 
 const STORAGE_KEY_PREFIX =
   "session-reminder:";
@@ -41,29 +37,7 @@ function getStorageKey(sessionId: string) {
   return `${STORAGE_KEY_PREFIX}${sessionId}`;
 }
 
-async function configureAndroidChannel() {
-  if (Platform.OS !== "android") {
-    return;
-  }
-
-  await Notifications.setNotificationChannelAsync(
-    NOTIFICATION_CHANNEL_ID,
-    {
-      name: "Rappels de séances",
-      description:
-        "Notifications rappelant les séances sportives programmées.",
-      importance:
-        Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#22C55E",
-      sound: "default",
-    }
-  );
-}
-
 export async function requestNotificationPermission(): Promise<boolean> {
-  await configureAndroidChannel();
-
   const currentPermissions =
     await Notifications.getPermissionsAsync();
 
@@ -191,10 +165,17 @@ export async function cancelSessionReminder(
     await getSessionReminder(sessionId);
 
   if (existingReminder) {
-    await Notifications
-      .cancelScheduledNotificationAsync(
-        existingReminder.notificationId
+    try {
+      await Notifications
+        .cancelScheduledNotificationAsync(
+          existingReminder.notificationId
+        );
+    } catch (error) {
+      console.warn(
+        "Le rappel système n’a pas pu être annulé :",
+        error
       );
+    }
   }
 
   await AsyncStorage.removeItem(
@@ -248,15 +229,15 @@ export async function scheduleSessionReminder({
         },
       },
 
+      /*
+       * Aucun channelId n’est indiqué.
+       * Expo Go utilisera son canal Android par défaut.
+       */
       trigger: {
         type:
           Notifications
             .SchedulableTriggerInputTypes.DATE,
         date: reminderDate,
-        channelId:
-          Platform.OS === "android"
-            ? NOTIFICATION_CHANNEL_ID
-            : undefined,
       },
     });
 
