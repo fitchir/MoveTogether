@@ -1,9 +1,17 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import {
+  useFocusEffect,
+  useRouter,
+} from "expo-router";
+import {
+  useCallback,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
-  FlatList,
+  Alert,
   Pressable,
+  SectionList,
   StyleSheet,
   Text,
   View,
@@ -12,12 +20,79 @@ import {
 import { useAuth } from "../../contexts/AuthContext";
 import { useRequests } from "../../contexts/RequestsContext";
 import {
+  cancelSessionReminder,
+  getAllSessionReminders,
+  scheduleSessionReminder,
+  SessionReminder,
+  updateSessionReminder,
+} from "../../services/notificationService";
+import {
   colors,
   radius,
   shadows,
   spacing,
 } from "../../theme";
 import { TrainingRequest } from "../../types/trainingRequest";
+
+function createSessionDate(
+  dateValue: string,
+  timeValue: string
+): Date | null {
+  const dateParts = dateValue
+    .trim()
+    .split("/")
+    .map(Number);
+
+  const timeParts = timeValue
+    .trim()
+    .split(":")
+    .map(Number);
+
+  if (
+    dateParts.length !== 3 ||
+    timeParts.length !== 2
+  ) {
+    return null;
+  }
+
+  const [day, month, year] = dateParts;
+  const [hours, minutes] = timeParts;
+
+  const date = new Date(
+    year,
+    month - 1,
+    day,
+    hours,
+    minutes,
+    0,
+    0
+  );
+
+  const isValid =
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day &&
+    date.getHours() === hours &&
+    date.getMinutes() === minutes;
+
+  return isValid ? date : null;
+}
+
+function isCompleteSession(
+  request: TrainingRequest
+) {
+  return Boolean(
+    request.id &&
+      request.senderId &&
+      request.senderName &&
+      request.receiverId &&
+      request.receiverName &&
+      request.activity?.trim() &&
+      request.date?.trim() &&
+      request.startTime?.trim() &&
+      request.endTime?.trim()
+  );
+}
 
 export default function SessionsScreen() {
   const router = useRouter();
@@ -29,64 +104,477 @@ export default function SessionsScreen() {
     error,
   } = useRequests();
 
+  const [reminders, setReminders] = useState<
+    Record<string, SessionReminder>
+  >({});
+
+  const [remindersLoading, setRemindersLoading] =
+    useState(true);
+
+  const [workingSessionId, setWorkingSessionId] =
+    useState<string | null>(null);
+
   const acceptedRequests = requests.filter(
-    (request) => request.status === "accepted"
+    (request) =>
+      request.status === "accepted" &&
+      isCompleteSession(request) &&
+      (
+        request.senderId === user?.uid ||
+        request.receiverId === user?.uid
+      )
   );
+
+  const currentTime = Date.now();
+
+  const upcomingSessions = acceptedRequests
+    .filter((request) => {
+      const sessionEnd = createSessionDate(
+        request.date,
+        request.endTime
+      );
+
+      return (
+        sessionEnd !== null &&
+        sessionEnd.getTime() >= currentTime
+      );
+    })
+    .sort((firstSession, secondSession) => {
+      const firstDate = createSessionDate(
+        firstSession.date,
+        firstSession.startTime
+      );
+
+      const secondDate = createSessionDate(
+        secondSession.date,
+        secondSession.startTime
+      );
+
+      return (
+        (firstDate?.getTime() ?? 0) -
+        (secondDate?.getTime() ?? 0)
+      );
+    });
+
+  const pastSessions = acceptedRequests
+    .filter((request) => {
+      const sessionEnd = createSessionDate(
+        request.date,
+        request.endTime
+      );
+
+      return (
+        sessionEnd !== null &&
+        sessionEnd.getTime() < currentTime
+      );
+    })
+    .sort((firstSession, secondSession) => {
+      const firstDate = createSessionDate(
+        firstSession.date,
+        firstSession.startTime
+      );
+
+      const secondDate = createSessionDate(
+        secondSession.date,
+        secondSession.startTime
+      );
+
+      return (
+        (secondDate?.getTime() ?? 0) -
+        (firstDate?.getTime() ?? 0)
+      );
+    });
+
+  const sessionSections = [
+    ...(upcomingSessions.length > 0
+      ? [
+          {
+            title: "Séances à venir",
+            data: upcomingSessions,
+            isPast: false,
+          },
+        ]
+      : []),
+
+    ...(pastSessions.length > 0
+      ? [
+          {
+            title: "Séances passées",
+            data: pastSessions,
+            isPast: true,
+          },
+        ]
+      : []),
+  ];
+
+  const loadReminders = useCallback(async () => {
+    try {
+      setRemindersLoading(true);
+
+      const storedReminders =
+        await getAllSessionReminders();
+
+      const remindersBySession =
+        storedReminders.reduce<
+          Record<string, SessionReminder>
+        >((result, reminder) => {
+          result[reminder.sessionId] = reminder;
+          return result;
+        }, {});
+
+      setReminders(remindersBySession);
+    } catch (loadError) {
+      console.error(
+        "Erreur pendant le chargement des rappels :",
+        loadError
+      );
+    } finally {
+      setRemindersLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadReminders();
+    }, [loadReminders])
+  );
+
+  const getPartnerName = (
+    request: TrainingRequest
+  ) => {
+    const isSender =
+      request.senderId === user?.uid;
+
+    return isSender
+      ? request.receiverName
+      : request.senderName;
+  };
+
+  const getErrorMessage = (
+    unknownError: unknown
+  ) => {
+    if (unknownError instanceof Error) {
+      return unknownError.message;
+    }
+
+    return "Une erreur inattendue est survenue.";
+  };
+
+  const getDelayLabel = (
+    minutesBefore: number
+  ) => {
+    if (minutesBefore === 24 * 60) {
+      return "24 heures avant";
+    }
+
+    if (minutesBefore === 2 * 60) {
+      return "2 heures avant";
+    }
+
+    if (minutesBefore === 60) {
+      return "1 heure avant";
+    }
+
+    if (minutesBefore === 30) {
+      return "30 minutes avant";
+    }
+
+    return `${minutesBefore} minutes avant`;
+  };
+
+  const formatReminderDate = (
+    reminderDate: string
+  ) => {
+    const date = new Date(reminderDate);
+
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    return date.toLocaleString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const isPastSession = (
+    session: TrainingRequest
+  ) => {
+    const sessionEnd = createSessionDate(
+      session.date,
+      session.endTime
+    );
+
+    return (
+      sessionEnd === null ||
+      sessionEnd.getTime() < Date.now()
+    );
+  };
+
+  const saveReminder = async (
+    session: TrainingRequest,
+    minutesBefore: number
+  ) => {
+    if (isPastSession(session)) {
+      Alert.alert(
+        "Séance terminée",
+        "Vous ne pouvez pas créer un rappel pour une séance passée."
+      );
+
+      return;
+    }
+
+    const partnerName =
+      getPartnerName(session);
+
+    const existingReminder =
+      reminders[session.id];
+
+    try {
+      setWorkingSessionId(session.id);
+
+      const reminderOptions = {
+        sessionId: session.id,
+        activity: session.activity,
+        partnerName,
+        sessionDate: session.date,
+        sessionTime: session.startTime,
+        minutesBefore,
+      };
+
+      const savedReminder = existingReminder
+        ? await updateSessionReminder(
+            reminderOptions
+          )
+        : await scheduleSessionReminder(
+            reminderOptions
+          );
+
+      setReminders((currentReminders) => ({
+        ...currentReminders,
+        [session.id]: savedReminder,
+      }));
+
+      Alert.alert(
+        existingReminder
+          ? "Rappel modifié"
+          : "Rappel créé",
+        `Vous recevrez une notification ${getDelayLabel(
+          minutesBefore
+        )} la séance.`
+      );
+    } catch (saveError) {
+      console.error(
+        "Erreur pendant la programmation du rappel :",
+        saveError
+      );
+
+      Alert.alert(
+        "Rappel impossible",
+        getErrorMessage(saveError)
+      );
+    } finally {
+      setWorkingSessionId(null);
+    }
+  };
+
+  const showReminderChoices = (
+    session: TrainingRequest
+  ) => {
+    if (isPastSession(session)) {
+      Alert.alert(
+        "Séance terminée",
+        "Il est impossible de créer un rappel pour cette séance."
+      );
+
+      return;
+    }
+
+    const existingReminder =
+      reminders[session.id];
+
+    Alert.alert(
+      existingReminder
+        ? "Modifier le rappel"
+        : "Créer un rappel",
+      "Quand souhaitez-vous recevoir la notification ?",
+      [
+        {
+          text: "24 heures avant",
+          onPress: () =>
+            saveReminder(session, 24 * 60),
+        },
+        {
+          text: "2 heures avant",
+          onPress: () =>
+            saveReminder(session, 2 * 60),
+        },
+        {
+          text: "1 heure avant",
+          onPress: () =>
+            saveReminder(session, 60),
+        },
+        {
+          text: "30 minutes avant",
+          onPress: () =>
+            saveReminder(session, 30),
+        },
+        {
+          text: "Fermer",
+          style: "cancel",
+        },
+      ]
+    );
+  };
+
+  const removeReminder = (
+    session: TrainingRequest
+  ) => {
+    Alert.alert(
+      "Annuler le rappel",
+      "Voulez-vous vraiment supprimer ce rappel ?",
+      [
+        {
+          text: "Non",
+          style: "cancel",
+        },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setWorkingSessionId(session.id);
+
+              await cancelSessionReminder(
+                session.id
+              );
+
+              setReminders(
+                (currentReminders) => {
+                  const updatedReminders = {
+                    ...currentReminders,
+                  };
+
+                  delete updatedReminders[
+                    session.id
+                  ];
+
+                  return updatedReminders;
+                }
+              );
+
+              Alert.alert(
+                "Rappel annulé",
+                "La notification a bien été supprimée."
+              );
+            } catch (cancelError) {
+              console.error(
+                "Erreur pendant l’annulation du rappel :",
+                cancelError
+              );
+
+              Alert.alert(
+                "Annulation impossible",
+                getErrorMessage(cancelError)
+              );
+            } finally {
+              setWorkingSessionId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const openSessionDetails = (
+    sessionId: string
+  ) => {
+    router.push({
+      pathname: "/session/[id]",
+      params: {
+        id: sessionId,
+      },
+    });
+  };
 
   const renderSession = ({
     item,
   }: {
     item: TrainingRequest;
   }) => {
-    const isSender =
-      item.senderId === user?.uid;
+    const partnerName = getPartnerName(item);
+    const reminder = reminders[item.id];
 
-    const partnerName = isSender
-      ? item.receiverName
-      : item.senderName;
+    const sessionIsPast =
+      isPastSession(item);
+
+    const isWorking =
+      workingSessionId === item.id;
 
     return (
-      <Pressable
-        style={({ pressed }) => [
+      <View
+        style={[
           styles.card,
-          pressed && styles.pressedCard,
+          sessionIsPast && styles.pastCard,
         ]}
-        onPress={() =>
-          router.push({
-            pathname: "/session/[id]",
-            params: {
-              id: item.id,
-            },
-          })
-        }
-        accessibilityRole="button"
-        accessibilityLabel={
-          `Voir la séance de ${item.activity}`
-        }
       >
         <View style={styles.header}>
-          <View style={styles.iconContainer}>
+          <View
+            style={[
+              styles.iconContainer,
+              sessionIsPast &&
+                styles.pastIconContainer,
+            ]}
+          >
             <Ionicons
               name="barbell-outline"
               size={25}
-              color={colors.secondaryDark}
+              color={
+                sessionIsPast
+                  ? colors.textMuted
+                  : colors.secondaryDark
+              }
             />
           </View>
 
           <View style={styles.headerInformation}>
-            <Text style={styles.activity}>
+            <Text
+              style={[
+                styles.activity,
+                sessionIsPast &&
+                  styles.pastActivity,
+              ]}
+            >
               {item.activity}
             </Text>
 
             <View style={styles.confirmedRow}>
               <Ionicons
-                name="checkmark-circle"
+                name={
+                  sessionIsPast
+                    ? "time-outline"
+                    : "checkmark-circle"
+                }
                 size={16}
-                color={colors.success}
+                color={
+                  sessionIsPast
+                    ? colors.textMuted
+                    : colors.success
+                }
               />
 
-              <Text style={styles.confirmed}>
-                Séance confirmée
+              <Text
+                style={[
+                  styles.confirmed,
+                  sessionIsPast &&
+                    styles.pastStatus,
+                ]}
+              >
+                {sessionIsPast
+                  ? "Séance terminée"
+                  : "Séance confirmée"}
               </Text>
             </View>
           </View>
@@ -166,7 +654,136 @@ export default function SessionsScreen() {
           </View>
         )}
 
-        <View style={styles.detailsLink}>
+        {reminder && !sessionIsPast && (
+          <View style={styles.reminderInformation}>
+            <View style={styles.reminderIcon}>
+              <Ionicons
+                name="notifications"
+                size={21}
+                color={colors.secondaryDark}
+              />
+            </View>
+
+            <View style={styles.reminderContent}>
+              <Text style={styles.reminderTitle}>
+                Rappel activé
+              </Text>
+
+              <Text style={styles.reminderText}>
+                {getDelayLabel(
+                  reminder.minutesBefore
+                )}
+              </Text>
+
+              <Text style={styles.reminderDate}>
+                Notification prévue le{" "}
+                {formatReminderDate(
+                  reminder.reminderDate
+                )}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {!sessionIsPast && (
+          <>
+            {remindersLoading ? (
+              <ActivityIndicator
+                color={colors.secondary}
+                style={styles.reminderLoader}
+              />
+            ) : (
+              <View style={styles.reminderActions}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.reminderButton,
+                    reminder &&
+                      styles.modifyReminderButton,
+                    pressed &&
+                      styles.pressedElement,
+                    isWorking &&
+                      styles.disabledButton,
+                  ]}
+                  onPress={() =>
+                    showReminderChoices(item)
+                  }
+                  disabled={isWorking}
+                >
+                  {isWorking ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.white}
+                    />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name={
+                          reminder
+                            ? "create-outline"
+                            : "notifications-outline"
+                        }
+                        size={19}
+                        color={colors.white}
+                      />
+
+                      <Text
+                        style={
+                          styles.reminderButtonText
+                        }
+                      >
+                        {reminder
+                          ? "Modifier le rappel"
+                          : "Créer un rappel"}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+
+                {reminder && (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.cancelReminderButton,
+                      pressed &&
+                        styles.pressedElement,
+                      isWorking &&
+                        styles.disabledButton,
+                    ]}
+                    onPress={() =>
+                      removeReminder(item)
+                    }
+                    disabled={isWorking}
+                  >
+                    <Ionicons
+                      name="trash-outline"
+                      size={19}
+                      color={colors.danger}
+                    />
+
+                    <Text
+                      style={
+                        styles.cancelReminderText
+                      }
+                    >
+                      Annuler
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+          </>
+        )}
+
+        <Pressable
+          style={({ pressed }) => [
+            styles.detailsLink,
+            pressed && styles.pressedElement,
+          ]}
+          onPress={() =>
+            openSessionDetails(item.id)
+          }
+          accessibilityRole="button"
+          accessibilityLabel={`Voir la séance de ${item.activity}`}
+        >
           <Text style={styles.detailsLinkText}>
             Voir les détails
           </Text>
@@ -176,8 +793,8 @@ export default function SessionsScreen() {
             size={19}
             color={colors.primary}
           />
-        </View>
-      </Pressable>
+        </Pressable>
+      </View>
     );
   };
 
@@ -237,7 +854,7 @@ export default function SessionsScreen() {
         <Pressable
           style={({ pressed }) => [
             styles.membersButton,
-            pressed && styles.pressedCard,
+            pressed && styles.pressedElement,
           ]}
           onPress={() =>
             router.push("/(tabs)/membres")
@@ -261,12 +878,26 @@ export default function SessionsScreen() {
         Retrouvez vos rendez-vous confirmés
       </Text>
 
-      <FlatList
-        data={acceptedRequests}
+      <SectionList
+        sections={sessionSections}
         keyExtractor={(item) => item.id}
         renderItem={renderSession}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>
+              {section.title}
+            </Text>
+
+            <View style={styles.sectionCount}>
+              <Text style={styles.sectionCountText}>
+                {section.data.length}
+              </Text>
+            </View>
+          </View>
+        )}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
+        stickySectionHeadersEnabled={false}
       />
     </View>
   );
@@ -298,11 +929,41 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 16,
     marginTop: spacing.xs,
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
   },
 
   list: {
     paddingBottom: spacing.xxxl,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
+
+  sectionTitle: {
+    color: colors.primary,
+    fontSize: 19,
+    fontWeight: "bold",
+  },
+
+  sectionCount: {
+    minWidth: 25,
+    height: 25,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.secondaryLight,
+    borderRadius: 13,
+    marginLeft: spacing.sm,
+    paddingHorizontal: spacing.xs,
+  },
+
+  sectionCountText: {
+    color: colors.secondaryDark,
+    fontSize: 13,
+    fontWeight: "bold",
   },
 
   card: {
@@ -313,8 +974,16 @@ const styles = StyleSheet.create({
     ...shadows.card,
   },
 
-  pressedCard: {
-    opacity: 0.8,
+  pastCard: {
+    opacity: 0.82,
+  },
+
+  pressedElement: {
+    opacity: 0.75,
+  },
+
+  disabledButton: {
+    opacity: 0.6,
   },
 
   header: {
@@ -332,6 +1001,10 @@ const styles = StyleSheet.create({
     marginRight: spacing.md,
   },
 
+  pastIconContainer: {
+    backgroundColor: colors.background,
+  },
+
   headerInformation: {
     flex: 1,
   },
@@ -340,6 +1013,10 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: 20,
     fontWeight: "bold",
+  },
+
+  pastActivity: {
+    color: colors.textMuted,
   },
 
   confirmedRow: {
@@ -353,6 +1030,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     marginLeft: spacing.xs,
+  },
+
+  pastStatus: {
+    color: colors.textMuted,
   },
 
   separator: {
@@ -413,11 +1094,103 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
 
+  reminderInformation: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.secondaryLight,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.lg,
+  },
+
+  reminderIcon: {
+    width: 42,
+    height: 42,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderRadius: 21,
+  },
+
+  reminderContent: {
+    flex: 1,
+    marginLeft: spacing.md,
+  },
+
+  reminderTitle: {
+    color: colors.secondaryDark,
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+
+  reminderText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 3,
+  },
+
+  reminderDate: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 3,
+  },
+
+  reminderActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+
+  reminderButton: {
+    flex: 1,
+    minHeight: 46,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.secondary,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+  },
+
+  modifyReminderButton: {
+    backgroundColor: colors.primary,
+  },
+
+  reminderButtonText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: "bold",
+    marginLeft: spacing.xs,
+  },
+
+  cancelReminderButton: {
+    minHeight: 46,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FEE2E2",
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+  },
+
+  cancelReminderText: {
+    color: colors.danger,
+    fontSize: 13,
+    fontWeight: "bold",
+    marginLeft: spacing.xs,
+  },
+
+  reminderLoader: {
+    marginTop: spacing.lg,
+  },
+
   detailsLink: {
     flexDirection: "row",
     justifyContent: "flex-end",
     alignItems: "center",
     marginTop: spacing.lg,
+    paddingVertical: spacing.xs,
   },
 
   detailsLinkText: {
