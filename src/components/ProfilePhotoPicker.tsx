@@ -1,6 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { useState } from "react";
+import * as ImageManipulator from "expo-image-manipulator";
+import { doc, getDoc } from "firebase/firestore";
+import {
+    useEffect,
+    useState,
+} from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -11,6 +16,10 @@ import {
     View,
 } from "react-native";
 
+import { useAuth } from "../contexts/AuthContext";
+import { uploadProfileAvatar } from "../services/avatarService";
+import { db } from "../services/firebase";
+
 type ProfilePhotoPickerProps = {
   firstname: string;
 };
@@ -18,6 +27,8 @@ type ProfilePhotoPickerProps = {
 export default function ProfilePhotoPicker({
   firstname,
 }: ProfilePhotoPickerProps) {
+  const { user } = useAuth();
+
   const [confirmedPhoto, setConfirmedPhoto] =
     useState<string | null>(null);
 
@@ -26,20 +37,75 @@ export default function ProfilePhotoPicker({
       null
     );
 
-  const [loading, setLoading] = useState(false);
+  const [loadingPhoto, setLoadingPhoto] =
+    useState(true);
+
+  const [choosing, setChoosing] =
+    useState(false);
+
+  const [uploading, setUploading] =
+    useState(false);
+
   const [information, setInformation] =
     useState("");
+
+  useEffect(() => {
+    async function loadCurrentPhoto() {
+      if (!user) {
+        setLoadingPhoto(false);
+        return;
+      }
+
+      try {
+        setLoadingPhoto(true);
+
+        const profileSnapshot = await getDoc(
+          doc(db, "users", user.uid)
+        );
+
+        if (profileSnapshot.exists()) {
+          const profileData =
+            profileSnapshot.data();
+
+          const photoUrl =
+            typeof profileData.photoUrl === "string"
+              ? profileData.photoUrl
+              : null;
+
+          setConfirmedPhoto(photoUrl);
+        }
+      } catch (error) {
+        console.error(
+          "Erreur pendant le chargement de la photo :",
+          error
+        );
+
+        setInformation(
+          "La photo enregistrée n’a pas pu être chargée."
+        );
+      } finally {
+        setLoadingPhoto(false);
+      }
+    }
+
+    loadCurrentPhoto();
+  }, [user]);
 
   const chooseImage = async (
     source: "camera" | "gallery"
   ) => {
+    if (uploading) {
+      return;
+    }
+
     try {
-      setLoading(true);
+      setChoosing(true);
       setInformation("");
 
       if (source === "camera") {
         const permission =
-          await ImagePicker.requestCameraPermissionsAsync();
+          await ImagePicker
+            .requestCameraPermissionsAsync();
 
         if (!permission.granted) {
           setInformation(
@@ -49,7 +115,8 @@ export default function ProfilePhotoPicker({
         }
       } else {
         const permission =
-          await ImagePicker.requestMediaLibraryPermissionsAsync();
+          await ImagePicker
+            .requestMediaLibraryPermissionsAsync();
 
         if (!permission.granted) {
           setInformation(
@@ -71,9 +138,8 @@ export default function ProfilePhotoPicker({
           ? await ImagePicker.launchCameraAsync(
               options
             )
-          : await ImagePicker.launchImageLibraryAsync(
-              options
-            );
+          : await ImagePicker
+              .launchImageLibraryAsync(options);
 
       if (result.canceled) {
         setInformation(
@@ -82,7 +148,45 @@ export default function ProfilePhotoPicker({
         return;
       }
 
-      setTemporaryPhoto(result.assets[0]);
+      const selectedPhoto = result.assets[0];
+
+if (!selectedPhoto) {
+  setInformation(
+    "La photo sélectionnée est introuvable."
+  );
+  return;
+}
+
+setInformation(
+  "Préparation et compression de la photo..."
+);
+
+const compressedPhoto =
+  await ImageManipulator.manipulateAsync(
+    selectedPhoto.uri,
+    [
+      {
+        resize: {
+          width: 900,
+        },
+      },
+    ],
+    {
+      compress: 0.65,
+      format:
+        ImageManipulator.SaveFormat.JPEG,
+    }
+  );
+
+setTemporaryPhoto({
+  ...selectedPhoto,
+  uri: compressedPhoto.uri,
+  width: compressedPhoto.width,
+  height: compressedPhoto.height,
+  mimeType: "image/jpeg",
+});
+
+     
 
       setInformation(
         "Vérifiez l’aperçu avant de confirmer."
@@ -95,24 +199,76 @@ export default function ProfilePhotoPicker({
         "Impossible d’ouvrir la caméra ou la galerie."
       );
     } finally {
-      setLoading(false);
+      setChoosing(false);
     }
   };
 
-  const confirmPhoto = () => {
+  const confirmPhoto = async () => {
     if (!temporaryPhoto) {
       return;
     }
 
-    setConfirmedPhoto(temporaryPhoto.uri);
-    setTemporaryPhoto(null);
+    if (!user) {
+      Alert.alert(
+        "Connexion requise",
+        "Vous devez être connecté pour enregistrer une photo."
+      );
+      return;
+    }
 
-    setInformation(
-      "La photo a été confirmée sur cet appareil."
-    );
+    try {
+      setUploading(true);
+      setInformation(
+        "Envoi de la photo en cours..."
+      );
+
+      const photoUrl =
+        await uploadProfileAvatar({
+          uri: temporaryPhoto.uri,
+          userId: user.uid,
+          mimeType: temporaryPhoto.mimeType,
+        });
+
+      setConfirmedPhoto(photoUrl);
+      setTemporaryPhoto(null);
+
+      setInformation(
+        "La photo de profil a été enregistrée."
+      );
+
+      Alert.alert(
+        "Photo enregistrée",
+        "Votre photo de profil a été envoyée avec succès."
+      );
+    } catch (error) {
+      console.error(
+        "Erreur pendant l’envoi de la photo :",
+        error
+      );
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Une erreur inconnue est survenue.";
+
+      setInformation(
+        "La photo n’a pas pu être enregistrée."
+      );
+
+      Alert.alert(
+        "Envoi impossible",
+        message
+      );
+    } finally {
+      setUploading(false);
+    }
   };
 
   const cancelPhoto = () => {
+    if (uploading) {
+      return;
+    }
+
     setTemporaryPhoto(null);
 
     setInformation(
@@ -123,6 +279,9 @@ export default function ProfilePhotoPicker({
   const displayedPhoto =
     temporaryPhoto?.uri ?? confirmedPhoto;
 
+  const interactionDisabled =
+    choosing || uploading;
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>
@@ -130,7 +289,14 @@ export default function ProfilePhotoPicker({
       </Text>
 
       <View style={styles.avatarContainer}>
-        {displayedPhoto ? (
+        {loadingPhoto ? (
+          <View style={styles.defaultAvatar}>
+            <ActivityIndicator
+              size="large"
+              color="#FFFFFF"
+            />
+          </View>
+        ) : displayedPhoto ? (
           <Image
             source={{ uri: displayedPhoto }}
             style={styles.avatar}
@@ -158,9 +324,15 @@ export default function ProfilePhotoPicker({
 
       <View style={styles.buttons}>
         <Pressable
-          style={styles.cameraButton}
-          onPress={() => chooseImage("camera")}
-          disabled={loading}
+          style={[
+            styles.cameraButton,
+            interactionDisabled &&
+              styles.disabledButton,
+          ]}
+          onPress={() =>
+            chooseImage("camera")
+          }
+          disabled={interactionDisabled}
         >
           <Ionicons
             name="camera-outline"
@@ -174,9 +346,15 @@ export default function ProfilePhotoPicker({
         </Pressable>
 
         <Pressable
-          style={styles.galleryButton}
-          onPress={() => chooseImage("gallery")}
-          disabled={loading}
+          style={[
+            styles.galleryButton,
+            interactionDisabled &&
+              styles.disabledButton,
+          ]}
+          onPress={() =>
+            chooseImage("gallery")
+          }
+          disabled={interactionDisabled}
         >
           <Ionicons
             name="images-outline"
@@ -190,11 +368,18 @@ export default function ProfilePhotoPicker({
         </Pressable>
       </View>
 
-      {loading && (
-        <ActivityIndicator
-          color="#22C55E"
-          style={styles.loader}
-        />
+      {(choosing || uploading) && (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator
+            color="#22C55E"
+          />
+
+          <Text style={styles.loadingText}>
+            {uploading
+              ? "Enregistrement de la photo..."
+              : "Ouverture en cours..."}
+          </Text>
+        </View>
       )}
 
       {information !== "" && (
@@ -206,23 +391,46 @@ export default function ProfilePhotoPicker({
       {temporaryPhoto && (
         <View style={styles.confirmationButtons}>
           <Pressable
-            style={styles.confirmButton}
+            style={[
+              styles.confirmButton,
+              uploading &&
+                styles.disabledButton,
+            ]}
             onPress={confirmPhoto}
+            disabled={uploading}
           >
-            <Ionicons
-              name="checkmark-outline"
-              size={20}
-              color="#FFFFFF"
-            />
+            {uploading ? (
+              <ActivityIndicator
+                color="#FFFFFF"
+                size="small"
+              />
+            ) : (
+              <>
+                <Ionicons
+                  name="cloud-upload-outline"
+                  size={20}
+                  color="#FFFFFF"
+                />
 
-            <Text style={styles.confirmButtonText}>
-              Confirmer
-            </Text>
+                <Text
+                  style={
+                    styles.confirmButtonText
+                  }
+                >
+                  Confirmer
+                </Text>
+              </>
+            )}
           </Pressable>
 
           <Pressable
-            style={styles.cancelButton}
+            style={[
+              styles.cancelButton,
+              uploading &&
+                styles.disabledButton,
+            ]}
             onPress={cancelPhoto}
+            disabled={uploading}
           >
             <Ionicons
               name="close-outline"
@@ -330,6 +538,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
 
+  disabledButton: {
+    opacity: 0.55,
+  },
+
   buttonText: {
     color: "#FFFFFF",
     fontSize: 13,
@@ -344,8 +556,17 @@ const styles = StyleSheet.create({
     marginLeft: 6,
   },
 
-  loader: {
+  loadingContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
     marginTop: 15,
+  },
+
+  loadingText: {
+    color: "#64748B",
+    fontSize: 14,
+    marginLeft: 8,
   },
 
   information: {
